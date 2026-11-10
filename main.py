@@ -40,3 +40,28 @@ def set_is_active(payload: SetActiveRequest):
         raise HTTPException(status_code=404, detail="User not found")
     users[payload.user_id]["is_active"] = payload.is_active
     return {"user": users[payload.user_id]}
+
+import random
+
+class PRCreateRequest(BaseModel):
+    pull_request_id: str
+    pull_request_name: str
+    author_id: str
+
+@app.post("/pullRequest/create", status_code=201)
+def create_pr(payload: PRCreateRequest):
+    author = users.get(payload.author_id)
+    if not author:
+        raise HTTPException(status_code=404, detail="Author not found")
+    team_members = teams[author["team_name"]]
+    # Первая реализация: выбираем 2 случайных ревьюеров из команды
+    assigned = random.sample(team_members, 2)
+    pr_obj = {
+        "pull_request_id": payload.pull_request_id,
+        "pull_request_name": payload.pull_request_name,
+        "author_id": payload.author_id,
+        "status": "OPEN",
+        "assigned_reviewers": assigned,
+    }
+    pull_requests[payload.pull_request_id] = pr_obj
+    return {"pr": pr_obj}
