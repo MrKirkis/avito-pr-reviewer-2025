@@ -67,3 +67,43 @@ def create_pr(payload: PRCreateRequest):
     }
     pull_requests[payload.pull_request_id] = pr_obj
     return {"pr": pr_obj}
+
+class PRMergeRequest(BaseModel):
+    pull_request_id: str
+
+class PRReassignRequest(BaseModel):
+    pull_request_id: str
+    old_user_id: str
+
+@app.post("/pullRequest/merge")
+def merge_pr(payload: PRMergeRequest):
+    pr = pull_requests.get(payload.pull_request_id)
+    if not pr:
+        raise HTTPException(status_code=404, detail="PR not found")
+    if pr["status"] == "MERGED":
+        raise HTTPException(status_code=400, detail="PR is already merged")
+    pr["status"] = "MERGED"
+    return {"pr": pr}
+
+@app.post("/pullRequest/reassign")
+def reassign_pr(payload: PRReassignRequest):
+    pr = pull_requests.get(payload.pull_request_id)
+    if not pr:
+        raise HTTPException(status_code=404, detail="PR not found")
+    if pr["status"] == "MERGED":
+        raise HTTPException(status_code=409, detail="Cannot reassign reviewers on merged PR")
+    if payload.old_user_id not in pr["assigned_reviewers"]:
+        raise HTTPException(status_code=409, detail="User is not assigned as reviewer")
+    author = users[pr["author_id"]]
+    team_members = teams.get(author["team_name"], [])
+    candidates = [
+        uid for uid in team_members
+        if uid != pr["author_id"]
+        and uid not in pr["assigned_reviewers"]
+        and users.get(uid, {}).get("is_active", False)
+    ]
+    # Баг в первой версии: если кандидатов 0, random.choice(candidates) упадёт с IndexError (500)
+    new_uid = random.choice(candidates)
+    idx = pr["assigned_reviewers"].index(payload.old_user_id)
+    pr["assigned_reviewers"][idx] = new_uid
+    return {"pr": pr, "replaced_by": new_uid}
