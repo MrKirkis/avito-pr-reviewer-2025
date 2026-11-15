@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import List, Dict
+from typing import List, Dict, Optional
+from datetime import datetime, timezone
 import random
 
 app = FastAPI(title="Avito PR Reviewer Service", version="0.3.0")
@@ -77,6 +78,8 @@ def create_pr(payload: PRCreateRequest):
         "author_id": payload.author_id,
         "status": "OPEN",
         "assigned_reviewers": assigned,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "mergedAt": None,
     }
     pull_requests[payload.pull_request_id] = pr_obj
     return {"pr": pr_obj}
@@ -86,9 +89,10 @@ def merge_pr(payload: PRMergeRequest):
     pr = pull_requests.get(payload.pull_request_id)
     if not pr:
         raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "PR not found"}})
-    if pr["status"] == "MERGED":
-        raise HTTPException(status_code=400, detail="PR is already merged")
-    pr["status"] = "MERGED"
+    # Идемпотентный merge: повторный вызов не вызывает ошибку и не перезаписывает mergedAt
+    if pr["status"] != "MERGED":
+        pr["status"] = "MERGED"
+        pr["mergedAt"] = datetime.now(timezone.utc).isoformat()
     return {"pr": pr}
 
 @app.post("/pullRequest/reassign")
