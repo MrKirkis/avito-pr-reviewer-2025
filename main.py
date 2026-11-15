@@ -1,58 +1,71 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 from typing import List, Dict
 import random
 
-app = FastAPI(title="Avito PR Reviewer Service", version="0.2.0")
+app = FastAPI(title="Avito PR Reviewer Service", version="0.3.0")
 
 teams: Dict[str, List[str]] = {}
 users: Dict[str, dict] = {}
 pull_requests: Dict[str, dict] = {}
 
 class TeamMemberInput(BaseModel):
-    user_id: str
-    username: str
+    user_id: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1)
     is_active: bool = True
 
 class TeamAddRequest(BaseModel):
-    team_name: str
-    members: List[TeamMemberInput]
+    team_name: str = Field(..., min_length=1)
+    members: List[TeamMemberInput] = Field(..., min_length=1)
 
 class SetActiveRequest(BaseModel):
-    user_id: str
+    user_id: str = Field(..., min_length=1)
     is_active: bool
 
 class PRCreateRequest(BaseModel):
-    pull_request_id: str
-    pull_request_name: str
-    author_id: str
+    pull_request_id: str = Field(..., min_length=1)
+    pull_request_name: str = Field(..., min_length=1)
+    author_id: str = Field(..., min_length=1)
+
+class PRMergeRequest(BaseModel):
+    pull_request_id: str = Field(..., min_length=1)
+
+class PRReassignRequest(BaseModel):
+    pull_request_id: str = Field(..., min_length=1)
+    old_user_id: str = Field(..., min_length=1)
 
 @app.post("/team/add", status_code=201)
 def add_team(payload: TeamAddRequest):
-    teams[payload.team_name] = [m.user_id for m in payload.members]
+    if payload.team_name in teams:
+        raise HTTPException(status_code=400, detail={"error": {"code": "TEAM_EXISTS", "message": "Team already exists"}})
+    seen_ids = []
     for m in payload.members:
+        if m.user_id not in seen_ids:
+            seen_ids.append(m.user_id)
         users[m.user_id] = {
             "user_id": m.user_id,
             "username": m.username,
             "team_name": payload.team_name,
             "is_active": m.is_active,
         }
-    return {"team": {"team_name": payload.team_name, "members": list(payload.members)}}
+    teams[payload.team_name] = seen_ids
+    return {"team": {"team_name": payload.team_name, "members": [users[uid] for uid in seen_ids]}}
 
 @app.post("/users/setIsActive")
 def set_is_active(payload: SetActiveRequest):
     if payload.user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "User not found"}})
     users[payload.user_id]["is_active"] = payload.is_active
     return {"user": users[payload.user_id]}
 
 @app.post("/pullRequest/create", status_code=201)
 def create_pr(payload: PRCreateRequest):
+    if payload.pull_request_id in pull_requests:
+        raise HTTPException(status_code=409, detail={"error": {"code": "PR_EXISTS", "message": "PR id already exists"}})
     author = users.get(payload.author_id)
     if not author:
-        raise HTTPException(status_code=404, detail="Author not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "Author not found"}})
     team_members = teams.get(author["team_name"], [])
-    # Исправлено: исключаем самого автора и неактивных участников, берём min(2, len)
     candidates = [
         uid for uid in team_members
         if uid != payload.author_id and users.get(uid, {}).get("is_active", False)
@@ -68,18 +81,11 @@ def create_pr(payload: PRCreateRequest):
     pull_requests[payload.pull_request_id] = pr_obj
     return {"pr": pr_obj}
 
-class PRMergeRequest(BaseModel):
-    pull_request_id: str
-
-class PRReassignRequest(BaseModel):
-    pull_request_id: str
-    old_user_id: str
-
 @app.post("/pullRequest/merge")
 def merge_pr(payload: PRMergeRequest):
     pr = pull_requests.get(payload.pull_request_id)
     if not pr:
-        raise HTTPException(status_code=404, detail="PR not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "PR not found"}})
     if pr["status"] == "MERGED":
         raise HTTPException(status_code=400, detail="PR is already merged")
     pr["status"] = "MERGED"
@@ -89,11 +95,11 @@ def merge_pr(payload: PRMergeRequest):
 def reassign_pr(payload: PRReassignRequest):
     pr = pull_requests.get(payload.pull_request_id)
     if not pr:
-        raise HTTPException(status_code=404, detail="PR not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "PR not found"}})
     if pr["status"] == "MERGED":
-        raise HTTPException(status_code=409, detail="Cannot reassign reviewers on merged PR")
+        raise HTTPException(status_code=409, detail={"error": {"code": "PR_MERGED", "message": "Cannot reassign on merged PR"}})
     if payload.old_user_id not in pr["assigned_reviewers"]:
-        raise HTTPException(status_code=409, detail="User is not assigned as reviewer")
+        raise HTTPException(status_code=409, detail={"error": {"code": "NOT_ASSIGNED", "message": "Reviewer is not assigned to this PR"}})
     author = users[pr["author_id"]]
     team_members = teams.get(author["team_name"], [])
     candidates = [
@@ -102,16 +108,15 @@ def reassign_pr(payload: PRReassignRequest):
         and uid not in pr["assigned_reviewers"]
         and users.get(uid, {}).get("is_active", False)
     ]
-    # Баг в первой версии: если кандидатов 0, random.choice(candidates) упадёт с IndexError (500)
     new_uid = random.choice(candidates)
     idx = pr["assigned_reviewers"].index(payload.old_user_id)
     pr["assigned_reviewers"][idx] = new_uid
     return {"pr": pr, "replaced_by": new_uid}
 
 @app.get("/users/getReview")
-def get_user_reviews(user_id: str):
+def get_user_reviews(user_id: str = Query(..., min_length=1)):
     if user_id not in users:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "User not found"}})
     user_prs = [
         {
             "pull_request_id": pr["pull_request_id"],
@@ -125,8 +130,8 @@ def get_user_reviews(user_id: str):
     return {"user_id": user_id, "pull_requests": user_prs}
 
 @app.get("/team/get")
-def get_team(team_name: str):
+def get_team(team_name: str = Query(..., min_length=1)):
     if team_name not in teams:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "Team not found"}})
     members = [users[uid] for uid in teams[team_name] if uid in users]
     return {"team_name": team_name, "members": members}
