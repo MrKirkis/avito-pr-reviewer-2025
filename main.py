@@ -104,14 +104,22 @@ def reassign_pr(payload: PRReassignRequest):
         raise HTTPException(status_code=409, detail={"error": {"code": "PR_MERGED", "message": "Cannot reassign on merged PR"}})
     if payload.old_user_id not in pr["assigned_reviewers"]:
         raise HTTPException(status_code=409, detail={"error": {"code": "NOT_ASSIGNED", "message": "Reviewer is not assigned to this PR"}})
-    author = users[pr["author_id"]]
-    team_members = teams.get(author["team_name"], [])
+    old_reviewer = users.get(payload.old_user_id)
+    if not old_reviewer:
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "Reviewer user not found"}})
+    # По ТЗ Авито: ищем активного кандидата именно из команды заменяемого ревьюера
+    reviewer_team_members = teams.get(old_reviewer["team_name"], [])
     candidates = [
-        uid for uid in team_members
+        uid for uid in reviewer_team_members
         if uid != pr["author_id"]
         and uid not in pr["assigned_reviewers"]
         and users.get(uid, {}).get("is_active", False)
     ]
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "NO_CANDIDATE", "message": "No active replacement candidate in team"}},
+        )
     new_uid = random.choice(candidates)
     idx = pr["assigned_reviewers"].index(payload.old_user_id)
     pr["assigned_reviewers"][idx] = new_uid
