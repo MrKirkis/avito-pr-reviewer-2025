@@ -1,0 +1,9 @@
+version: "3.8"
+
+services:
+  pr-reviewer-service:
+    build: .
+    container_name: avito-pr-reviewer
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
